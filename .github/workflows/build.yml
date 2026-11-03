@@ -58,6 +58,10 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # The old default ("tools platform-tools") fails: "tools" no longer exists.
+          packages: 'platform-tools'
+          accept-android-sdk-licenses: true
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
