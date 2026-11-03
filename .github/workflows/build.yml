@@ -1,0 +1,99 @@
+name: Build AdFree AA Browser APK
+
+# Runs automatically when you upload files, and from the Actions tab ("Run workflow").
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Get repository files
+        uses: actions/checkout@v4
+
+      - name: Unpack project source
+        run: |
+          if [ -f AdFreeAABrowser-source.zip ]; then
+            unzip -q AdFreeAABrowser-source.zip -d src
+            # The zip contains one top-level folder; use it as the project root.
+            ROOT="$(dirname "$(find src -maxdepth 3 -name settings.gradle.kts | head -n1)")"
+          else
+            ROOT="."
+          fi
+          if [ ! -f "$ROOT/settings.gradle.kts" ]; then
+            echo "::error::AdFreeAABrowser-source.zip was not found in the repository. Upload it, then run this workflow again."
+            exit 1
+          fi
+          echo "PROJECT_DIR=$ROOT" >> "$GITHUB_ENV"
+          echo "Project folder: $ROOT"
+
+      - name: Refresh ad blocklist (latest StevenBlack/hosts)
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          OUT=app/src/main/assets/adblock/hosts.txt
+          if curl -fsSL --retry 3 https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts -o /tmp/hosts; then
+            {
+              echo "# Ad & tracker domains from StevenBlack/hosts (MIT License, https://github.com/StevenBlack/hosts)"
+              grep -m1 "^# Date" /tmp/hosts || true
+              awk '$1=="0.0.0.0" && $2!="0.0.0.0" {print $2}' /tmp/hosts | sort -u
+            } > /tmp/hosts.txt
+            if [ "$(wc -l < /tmp/hosts.txt)" -gt 10000 ]; then
+              mv /tmp/hosts.txt "$OUT"
+              echo "Blocklist updated: $(wc -l < "$OUT") lines"
+            fi
+          else
+            echo "Could not download a fresh list; using the bundled one."
+          fi
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Test ad blocker
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:testDebugUnitTest --tests "*HostBlocklistTest*"
+
+      - name: Build signed APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: ./gradlew --no-daemon :app:assembleRelease
+
+      - name: Collect APK
+        run: |
+          mkdir -p out
+          find "$PROJECT_DIR/app/build/renamedApks/release" -name "*.apk" -exec cp {} out/ \; || true
+          if [ -z "$(ls out)" ]; then
+            find "$PROJECT_DIR/app/build/outputs/apk/release" -name "*.apk" -exec cp {} out/AdFreeAABrowser.apk \;
+          fi
+          ls -la out
+
+      - name: Upload APK (Actions tab download)
+        uses: actions/upload-artifact@v4
+        with:
+          name: AdFreeAABrowser-apk
+          path: out/*.apk
+
+      - name: Publish APK to Releases (easy phone download)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: AdFree AA Browser build ${{ github.run_number }}
+          body: |
+            Download the .apk below on your Android 15+ phone and install it.
+            Then turn on Android Auto > Developer settings > Unknown sources.
+          files: out/*.apk
+          make_latest: true
